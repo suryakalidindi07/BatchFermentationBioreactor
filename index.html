@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>E. coli batch fermentation</title>
+  <style>
+    * { box-sizing: border-box; border-radius: 0; }
+    html, body { margin: 0; padding: 0; background: #fff; color: #000; }
+    body { font-family: Arial, Helvetica, sans-serif; line-height: 1.4; }
+    .page { max-width: 1200px; margin: 0 auto; padding: 35px 36px 55px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid #000; }
+    h1 { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -0.6px; }
+    button { color: #000; background: #fff; border: 1px solid #000; padding: 9px 18px; font: inherit; cursor: pointer; white-space: nowrap; }
+    button:hover, button:focus-visible { color: #fff; background: #000; }
+    main { display: grid; grid-template-columns: minmax(250px, 305px) minmax(0, 1fr); gap: 65px; padding-top: 33px; }
+    h2 { font-size: 17px; line-height: 1.3; font-weight: 700; margin: 0 0 23px; }
+    .field { margin-bottom: 23px; }
+    .field label { display: block; margin: 0 0 9px; font-size: 14px; font-weight: 600; }
+    .field input { display: block; width: 100%; height: 40px; padding: 7px 11px; border: 1px solid #000; color: #000; background: #fff; font: inherit; font-size: 16px; }
+    .field input:focus-visible { outline: 2px solid #000; outline-offset: 2px; }
+    .error { margin: 0 0 18px; font-size: 13px; font-weight: 700; min-height: 0; }
+    .error:empty { display: none; }
+    .presets { margin-top: 35px; }
+    .presets h2 { margin-bottom: 17px; }
+    .presets dl { margin: 0; }
+    .presets dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 6px 0; }
+    .presets dt { font-size: 12px; flex: 1; }
+    .presets dd { margin: 0; font-size: 12px; text-align: right; white-space: nowrap; font-weight: 700; }
+    .results h2 { margin-bottom: 27px; }
+    .readouts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 30px; row-gap: 26px; margin-bottom: 48px; }
+    .readout { min-width: 0; }
+    .readout label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 7px; }
+    .readout output { display: block; white-space: nowrap; font-size: 32px; font-weight: 700; letter-spacing: -0.5px; }
+    .readout.primary output { font-size: 45px; }
+    .chart-heading { margin: 0 0 8px; font-size: 17px; }
+    .chart { display: block; width: 100%; height: auto; overflow: visible; color: #000; }
+    .chart line, .chart path { vector-effect: non-scaling-stroke; }
+    .chart text { fill: #000; font: 13px Arial, Helvetica, sans-serif; }
+    .chart-key { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 12px; margin: 14px 0 5px; }
+    .key-solid, .key-dash, .key-dot { display: inline-block; width: 29px; height: 0; border-top: 2px solid #000; margin-left: 10px; }
+    .key-solid:first-child { margin-left: 0; }
+    .key-dash { border-top-style: dashed; }
+    .key-dot { border-top-style: dotted; }
+    @media (max-width: 730px) {
+      .page { padding: 23px 19px 40px; }
+      header { align-items: flex-start; }
+      h1 { font-size: 24px; }
+      main { grid-template-columns: 1fr; gap: 42px; padding-top: 25px; }
+      .field { max-width: 500px; }
+      .presets { max-width: 500px; }
+      .readouts { row-gap: 18px; }
+      .readout output, .readout.primary output { font-size: clamp(21px, 6vw, 34px); }
+    }
+    @media (max-width: 390px) {
+      header { flex-wrap: wrap; }
+      .readouts { column-gap: 10px; }
+    }
+  </style>
+  <script src="fermentation_model.js" defer></script>
+  <script defer>
+    document.addEventListener('DOMContentLoaded', function () {
+      'use strict';
+      const { simulate, PRESET, DEFAULT_CONTROLS, INPUT_RANGES } = window.EcoliBatchModel;
+      const names = ['rpm', 'vvm', 'temperatureC', 'ph'];
+      const form = document.getElementById('inputs');
+      const error = document.getElementById('error');
+      const NS = 'http://www.w3.org/2000/svg';
+      const number = (v, digits) => Number(v).toFixed(digits);
+
+      function addSvg(svg, tag, attributes, content) {
+        const el = document.createElementNS(NS, tag);
+        Object.entries(attributes).forEach(([key, val]) => el.setAttribute(key, String(val)));
+        if (content !== undefined) el.textContent = content;
+        svg.appendChild(el);
+        return el;
+      }
+
+      function axisMaximum(maxValue) {
+        if (maxValue <= 0) return 1;
+        const target = maxValue * 1.08;
+        const step = Math.pow(10, Math.floor(Math.log10(target / 5)));
+        const scaledStep = target / (5 * step);
+        const niceStep = scaledStep <= 1 ? 1 : scaledStep <= 2 ? 2 : scaledStep <= 2.5 ? 2.5 : scaledStep <= 5 ? 5 : 10;
+        return Math.ceil(target / (niceStep * step)) * niceStep * step;
+      }
+
+      function axisValue(value, maxValue) {
+        return maxValue < 2 ? number(value, 2) : maxValue < 10 ? number(value, 1) : number(value, 0);
+      }
+
+      // One concentration graph. Glucose and biomass share the left axis;
+      // the smaller product concentration uses the right axis.
+      function drawChart(samples, totalHours) {
+        const svg = document.getElementById('concentration-chart');
+        svg.replaceChildren();
+        const left = 85, right = 683, top = 23, bottom = 307;
+        const leftMax = axisMaximum(Math.max(...samples.map(s =>
+          Math.max(s.substrateGramsPerLiter, s.biomassGramsPerLiter))));
+        const rightMax = axisMaximum(Math.max(...samples.map(s => s.productGramsPerLiter)));
+        const x = hours => left + (right - left) * hours / totalHours;
+        const yLeft = val => bottom - (bottom - top) * val / leftMax;
+        const yRight = val => bottom - (bottom - top) * val / rightMax;
+
+        // Black axes with separately scaled concentrations (g/L).
+        addSvg(svg, 'line', {x1:left, y1:top, x2:left, y2:bottom, stroke:'#000'});
+        addSvg(svg, 'line', {x1:right, y1:top, x2:right, y2:bottom, stroke:'#000'});
+        addSvg(svg, 'line', {x1:left, y1:bottom, x2:right, y2:bottom, stroke:'#000'});
+        for (let i = 0; i <= 5; i++) {
+          const posY = bottom - (bottom - top) * i / 5;
+          addSvg(svg, 'line', {x1:left-5,y1:posY,x2:left,y2:posY,stroke:'#000'});
+          addSvg(svg, 'text', {x:left-11,y:posY+4,'text-anchor':'end'}, axisValue(leftMax*i/5,leftMax));
+          addSvg(svg, 'line', {x1:right,y1:posY,x2:right+5,y2:posY,stroke:'#000'});
+          addSvg(svg, 'text', {x:right+11,y:posY+4,'text-anchor':'start'}, axisValue(rightMax*i/5,rightMax));
+          const posX = x(totalHours*i/5);
+          addSvg(svg, 'line', {x1:posX,y1:bottom,x2:posX,y2:bottom+5,stroke:'#000'});
+          addSvg(svg, 'text', {x:posX,y:bottom+20,'text-anchor':'middle'}, number(totalHours*i/5,0));
+        }
+        addSvg(svg, 'text', {x:(left+right)/2,y:353,'text-anchor':'middle'}, 'Time (hours)');
+        addSvg(svg, 'text', {x:17,y:(top+bottom)/2,'text-anchor':'middle',
+          transform:`rotate(-90 17 ${(top+bottom)/2})`}, 'Glucose / Biomass (g/L)');
+        addSvg(svg, 'text', {x:760,y:(top+bottom)/2,'text-anchor':'middle',
+          transform:`rotate(90 760 ${(top+bottom)/2})`}, 'Product (g/L)');
+
+        function plot(key, y, dash) {
+          const points = samples.map(s => `${x(s.timeHours).toFixed(2)},${y(s[key]).toFixed(2)}`).join(' ');
+          const attrs = {points, fill:'none', stroke:'#000', 'stroke-width':2.5,
+            'stroke-linecap':'butt','stroke-linejoin':'round'};
+          if (dash) attrs['stroke-dasharray'] = dash;
+          addSvg(svg, 'polyline', attrs);
+        }
+        plot('substrateGramsPerLiter', yLeft, null);    // glucose: solid
+        plot('biomassGramsPerLiter', yLeft, '10 6');   // biomass: dashed
+        plot('productGramsPerLiter', yRight, '2 5');  // product: dotted
+      }
+
+      function readInputs() {
+        const values = {};
+        for (const key of names) {
+          const field = document.getElementById(key);
+          const raw = field.value.trim();
+          const value = Number(raw);
+          const [min, max] = INPUT_RANGES[key];
+          if (raw === '' || !Number.isFinite(value) || value < min || value > max) {
+            throw new RangeError(`${field.dataset.name} must be between ${min} and ${max}.`);
+          }
+          values[key] = value;
+        }
+        return values;
+      }
+
+      function run() {
+        try {
+          const result = simulate(readInputs());
+          error.textContent = '';
+          document.getElementById('product-total').textContent = number(result.summary.finalProductGrams, 2) + ' g';
+          document.getElementById('product-concentration').textContent = number(result.summary.finalProductGramsPerLiter, 3) + ' g/L';
+          document.getElementById('biomass-concentration').textContent = number(result.summary.finalBiomassGramsPerLiter, 2) + ' g/L';
+          document.getElementById('biomass-total').textContent = number(result.summary.finalBiomassGramsPerLiter * PRESET.liquidVolumeLiters, 2) + ' g';
+          drawChart(result.samples, result.summary.durationHours);
+        } catch (err) {
+          error.textContent = err.message;
+        }
+      }
+
+      form.addEventListener('input', run);
+      document.getElementById('reset').addEventListener('click', function () {
+        names.forEach(key => { document.getElementById(key).value = String(DEFAULT_CONTROLS[key]); });
+        run();
+      });
+      run();
+    });
+  </script>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>E. coli batch fermentation</h1>
+      <button id="reset" type="button">Reset</button>
+    </header>
+    <main>
+      <aside aria-label="Parameters">
+        <h2>Inputs (change these)</h2>
+        <form id="inputs" autocomplete="off" novalidate>
+          <div class="field">
+            <label for="rpm">Agitation (stirring speed, RPM)</label>
+            <input type="number" id="rpm" data-name="Agitation" value="480" min="100" max="1400" step="any">
+          </div>
+          <div class="field">
+            <label for="vvm">Aeration (air supplied, VVM)</label>
+            <input type="number" id="vvm" data-name="Aeration" value="1" min="0" max="2.5" step="any">
+          </div>
+          <div class="field">
+            <label for="temperatureC">Temperature (how warm, °C)</label>
+            <input type="number" id="temperatureC" data-name="Temperature" value="37" min="15" max="50" step="any">
+          </div>
+          <div class="field">
+            <label for="ph">pH (how acidic)</label>
+            <input type="number" id="ph" data-name="pH" value="7" min="2" max="11" step="any">
+          </div>
+          <p id="error" class="error" role="status" aria-live="polite"></p>
+        </form>
+        <section class="presets" aria-labelledby="preset-title">
+          <h2 id="preset-title">Fixed settings (cannot change)</h2>
+          <dl>
+            <div><dt>Organism (microbe)</dt><dd>E. coli</dd></div>
+            <div><dt>Mode (fermentation type)</dt><dd>Batch</dd></div>
+            <div><dt>Maximum growth rate (fastest cell growth)</dt><dd>0.60 h⁻¹</dd></div>
+            <div><dt>Half-saturation, Ks (food for half-speed growth)</dt><dd>0.050 g/L</dd></div>
+            <div><dt>Biomass yield (cells made from food)</dt><dd>0.45 g/g</dd></div>
+            <div><dt>Initial glucose (starting food)</dt><dd>20 g/L</dd></div>
+            <div><dt>Initial biomass (starting cells)</dt><dd>0.05 g/L</dd></div>
+            <div><dt>Vessel size (tank capacity)</dt><dd>30 L</dd></div>
+            <div><dt>Liquid volume (amount of culture)</dt><dd>20 L</dd></div>
+            <div><dt>Run time (batch duration)</dt><dd>24 hours</dd></div>
+            <div><dt>Product yield (assumed; not measured)</dt><dd>0.10 g/g</dd></div>
+          </dl>
+        </section>
+      </aside>
+      <section class="results" aria-label="Results">
+        <h2>Results (after 24 hours)</h2>
+        <div class="readouts">
+          <div class="readout primary">
+            <label for="product-total">Product (total produced; estimated)</label>
+            <output id="product-total">—</output>
+          </div>
+          <div class="readout">
+            <label for="biomass-concentration">Biomass (cell mass in each liter)</label>
+            <output id="biomass-concentration">—</output>
+          </div>
+          <div class="readout">
+            <label for="product-concentration">Product concentration (estimated per liter)</label>
+            <output id="product-concentration">—</output>
+          </div>
+          <div class="readout">
+            <label for="biomass-total">Total biomass (cells in the whole tank)</label>
+            <output id="biomass-total">—</output>
+          </div>
+        </div>
+        <h2 class="chart-heading">Concentrations over time</h2>
+        <div class="chart-key" aria-hidden="true">
+          <span class="key-solid"></span> Glucose (left axis)
+          <span class="key-dash"></span> Biomass (left axis)
+          <span class="key-dot"></span> Product (right axis)
+        </div>
+        <svg id="concentration-chart" class="chart" viewBox="0 0 780 370" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Combined concentration graph over 24 hours: glucose and biomass grams per liter on the left axis, product grams per liter on the right axis. Solid glucose line, dashed biomass line, dotted product line."></svg>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
