@@ -1,3 +1,4 @@
+/* E. coli batch model. Product formation remains illustrative and is not calibrated for a specific chemical. */
 (function (root) {
 'use strict';
 
@@ -9,9 +10,11 @@ const PRESET = Object.freeze({
   yieldBiomassPerSubstrate: 0.45,
   substrateInitialGramsPerLiter: 20.0,
   biomassInitialGramsPerLiter: 0.05,
-  volumeLiters: 20.0,
+  vesselSizeLiters: 30.0,
+  liquidVolumeLiters: 20.0,
   substrateName: 'Glucose',
-  productName: 'Acetate (illustrative estimate)',
+  productName: 'Product (illustrative estimate)',
+  // Assumed generic growth-associated yield; not validated for a specific product.
   productAlphaGramsPerGramBiomass: 0.10,
   productBetaGramsPerGramBiomassHour: 0.0,
   temperatureMinimumC: 3.06,
@@ -90,7 +93,8 @@ function oxygenSaturationMgPerLiter(tempC) {
 }
 
 function tankDiameterMeters() {
-  const volumeM3 = PRESET.volumeLiters / 1000;
+  // Tank cross-sectional area comes from full vessel capacity (30 L), not liquid fill (20 L).
+  const volumeM3 = PRESET.vesselSizeLiters / 1000;
   return Math.cbrt((4 * volumeM3) / (Math.PI * PRESET.tankHeightToDiameter));
 }
 
@@ -98,7 +102,8 @@ function transferConditions(controls) {
   const { rpm, vvm, temperatureC } = validateControls(controls);
   const d = tankDiameterMeters();
   const areaM2 = Math.PI * d * d / 4;
-  const gasFlowM3s = (vvm * (PRESET.volumeLiters / 1000)) / 60;
+  // VVM is gas flow per LIQUID volume per minute.
+  const gasFlowM3s = (vvm * (PRESET.liquidVolumeLiters / 1000)) / 60;
   const superficialVelocityMs = gasFlowM3s / areaM2;
   const powerPerVolumeWm3 = PRESET.refPowerPerVolumeWm3 *
     (rpm / PRESET.refRpm) ** 3;
@@ -188,7 +193,7 @@ function simulate(input = DEFAULT_CONTROLS, durationHours = PRESET.defaultDurati
       Math.max(0, state.x - PRESET.biomassInitialGramsPerLiter);
     samples.push({
       productGramsPerLiter,
-      productGrams: productGramsPerLiter * PRESET.volumeLiters,
+      productGrams: productGramsPerLiter * PRESET.liquidVolumeLiters,
       productFormationRateGramsPerLiterHour: PRESET.productAlphaGramsPerGramBiomass * rates.dx,
       timeHours: hour,
       biomassGramsPerLiter: state.x,
@@ -228,6 +233,8 @@ function simulate(input = DEFAULT_CONTROLS, durationHours = PRESET.defaultDurati
       finalProductGramsPerLiter: final.productGramsPerLiter,
       averageProductivityGramsPerLiterHour: final.productGramsPerLiter / durationHours,
       finalBiomassGramsPerLiter: final.biomassGramsPerLiter,
+      // Total biomass is based on the working LIQUID volume (20 L), not the 30 L vessel capacity.
+      finalBiomassGrams: final.biomassGramsPerLiter * PRESET.liquidVolumeLiters,
       finalSubstrateGramsPerLiter: final.substrateGramsPerLiter,
       finalOxygenPercent: final.dissolvedOxygenPercent,
       maximumBiomassFromSubstrateGramsPerLiter: maxBiomass,

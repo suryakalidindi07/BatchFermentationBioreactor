@@ -157,7 +157,16 @@
           document.getElementById('product-total').textContent = number(result.summary.finalProductGrams, 2) + ' g';
           document.getElementById('product-concentration').textContent = number(result.summary.finalProductGramsPerLiter, 3) + ' g/L';
           document.getElementById('biomass-concentration').textContent = number(result.summary.finalBiomassGramsPerLiter, 2) + ' g/L';
-          document.getElementById('biomass-total').textContent = number(result.summary.finalBiomassGramsPerLiter * PRESET.liquidVolumeLiters, 2) + ' g';
+          // Prefer the model's directly calculated total. Support older model files
+          // whose liquid volume was named `volumeLiters` rather than `liquidVolumeLiters`.
+          const liquidVolumeLiters = Number(PRESET.liquidVolumeLiters ?? PRESET.volumeLiters);
+          const totalBiomassGrams = Number.isFinite(result.summary.finalBiomassGrams)
+            ? result.summary.finalBiomassGrams
+            : result.summary.finalBiomassGramsPerLiter * liquidVolumeLiters;
+          if (!Number.isFinite(totalBiomassGrams)) {
+            throw new Error('Total biomass could not be calculated. Keep index.html and fermentation_model.js from the same download.');
+          }
+          document.getElementById('biomass-total').textContent = number(totalBiomassGrams, 2) + ' g';
           drawChart(result.samples, result.summary.durationHours);
         } catch (err) {
           error.textContent = err.message;
